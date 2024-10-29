@@ -1,0 +1,111 @@
+function main() {
+  const SPREADSHEET_URL = ''; // Voeg je vaste spreadsheet URL hier in
+  const EXCLUDED_CAMPAIGNS = ['DSA', 'Branded']; // Voeg hier de campagnes toe die je wilt uitsluiten
+
+  const report = AdsApp.report(`
+    SELECT 
+      Query, 
+      AdGroupId, 
+      AdGroupName, 
+      CampaignName
+    FROM 
+      SEARCH_QUERY_PERFORMANCE_REPORT
+    WHERE 
+      Impressions > 0
+    DURING LAST_7_DAYS
+  `);
+
+  const rows = report.rows();
+  const searchTermData = {};
+  
+  // Verzamel zoektermen per advertentiegroep
+  while (rows.hasNext()) {
+    const row = rows.next();
+    const query = row['Query'];
+    const adGroupId = row['AdGroupId'];
+    const adGroupName = row['AdGroupName'];
+    const campaignName = row['CampaignName'];
+
+    // Campagnes uitsluiten
+    if (EXCLUDED_CAMPAIGNS.includes(campaignName)) {
+      continue; // Sla deze campagne over als deze in de uitsluitingslijst staat
+    }
+
+    if (!searchTermData[query]) {
+      searchTermData[query] = [];
+    }
+    
+    searchTermData[query].push({
+      adGroupId: adGroupId,
+      adGroupName: adGroupName,
+      campaignName: campaignName
+    });
+  }
+
+  const spreadsheet = SpreadsheetApp.openByUrl(SPREADSHEET_URL);
+  const sheet = spreadsheet.getActiveSheet();
+  sheet.clear();
+  sheet.appendRow(['Search Term', 'AdGroup 1', 'AdGroup 2', 'Levenshtein Distance 1', 'Levenshtein Distance 2', 'Excluded From']);
+
+  for (const query in searchTermData) {
+    if (searchTermData[query].length > 1) {
+      const adGroup1 = searchTermData[query][0];
+      const adGroup2 = searchTermData[query][1];
+      
+      // Check if the ad groups are different
+      if (adGroup1.adGroupName !== adGroup2.adGroupName) {
+        
+        // Levenshtein Distance berekenen
+        const distance1 = levenshtein(adGroup1.adGroupName, query);
+        const distance2 = levenshtein(adGroup2.adGroupName, query);
+        
+        let excludedAdGroup = '';
+        if (distance1 > distance2) {
+          excludedAdGroup = adGroup1.adGroupName;
+          excludeSearchTerm(adGroup1.adGroupId, query);
+        } else {
+          excludedAdGroup = adGroup2.adGroupName;
+          excludeSearchTerm(adGroup2.adGroupId, query);
+        }
+
+        // Resultaten exporteren naar spreadsheet
+        sheet.appendRow([query, adGroup1.adGroupName, adGroup2.adGroupName, distance1, distance2, excludedAdGroup]);
+      }
+    }
+  }
+}
+
+// Aangepaste Levenshtein Distance functie
+function levenshtein(a, b) {
+  let tmp = [];
+  if (a.length === 0) { return b.length; }
+  if (b.length === 0) { return a.length; }
+  if (a.length > b.length) { 
+    tmp = a; 
+    a = b; 
+    b = tmp; 
+  }
+
+  const row = [];
+  for (let i = 0; i <= a.length; i++) {
+    row[i] = i;
+  }
+
+  for (let i = 1; i <= b.length; i++) {
+    let prev = i;
+    for (let j = 1; j <= a.length; j++) {
+      const val = (b[i - 1] === a[j - 1]) ? row[j - 1] : Math.min(row[j - 1] + 1, Math.min(prev + 1, row[j] + 1));
+      row[j - 1] = prev;
+      prev = val;
+    }
+    row[a.length] = prev;
+  }
+
+  return row[a.length];
+}
+
+// Functie om zoekterm uit te sluiten in een bepaalde advertentiegroep
+function excludeSearchTerm(adGroupId, searchTerm) {
+  const adGroup = AdsApp.adGroups().withIds([adGroupId]).get().next();
+  adGroup.createNegativeKeyword(searchTerm);
+}
